@@ -1,0 +1,12 @@
+node_modules/
+dist/
+ios-build/
+Payload/
+*.ipa
+*.apk
+.DS_Store
+android/.gradle/
+android/local.properties
+android/app/build/
+ios/App/Pods/
+*.xcuserdata/

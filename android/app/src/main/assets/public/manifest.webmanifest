@@ -1,0 +1,10 @@
+{
+  "name": "دەفتەری قەرز",
+  "short_name": "دەفتەری قەرز",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#19191b",
+  "lang": "ku",
+  "dir": "rtl"
+}
