@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   build-ios:
     runs-on: macos-15
@@ -43,16 +46,31 @@ jobs:
             CODE_SIGN_IDENTITY='' \
             build
 
-      - name: Package unsigned IPA
+      - name: Package iKurd-compatible unsigned IPA
         run: |
           mkdir -p Payload
           cp -R ios-build/Build/Products/Release-iphoneos/App.app Payload/
-          ditto -c -k --sequesterRsrc --keepParent Payload daftari-qarz-unsigned.ipa
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Daftar Qarz" Payload/App.app/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName DaftarQarz" Payload/App.app/Info.plist
+          plutil -convert xml1 Payload/App.app/Info.plist
+          /usr/bin/zip -0 -q -r DaftarQarz-iKurd.ipa Payload
+          unzip -t DaftarQarz-iKurd.ipa
 
-      - name: Upload unsigned IPA
+      - name: Upload iKurd-compatible IPA
         uses: actions/upload-artifact@v4
         with:
-          name: daftari-qarz-unsigned-ipa
-          path: daftari-qarz-unsigned.ipa
+          name: DaftarQarz-iKurd
+          path: DaftarQarz-iKurd.ipa
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish direct Safari download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view latest >/dev/null 2>&1; then
+            gh release delete-asset latest DaftarQarz-iKurd.ipa --yes 2>/dev/null || true
+            gh release upload latest DaftarQarz-iKurd.ipa --clobber
+          else
+            gh release create latest DaftarQarz-iKurd.ipa --title "Daftar Qarz IPA" --notes "Unsigned iKurd-compatible IPA."
+          fi
