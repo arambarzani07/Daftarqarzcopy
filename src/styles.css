@@ -20,3 +20,8 @@ main { padding:10px 14px 0; }
 @media (max-width:440px){.status{padding-inline:20px}.island{width:185px}.person-row{padding-inline:16px;gap:8px;font-size:17px}.summary{font-size:17px;padding-inline:18px}.person-balance{font-size:17px}}
 @media (max-width:380px){.status{padding-inline:16px}.island{width:145px}.person-row{padding-inline:14px;gap:6px;font-size:16px}.person-balance{font-size:16px}}
 @media (prefers-reduced-motion:no-preference){.modal,.drawer{animation:rise .2s ease-out}.toast{animation:pop .18s ease-out}@keyframes rise{from{transform:translateY(20px);opacity:.4}}@keyframes pop{from{transform:translate(-50%,10px);opacity:0}}}
+
+.state-card{background:var(--surface);border-radius:10px;padding:22px 18px;text-align:center;color:var(--muted);font-size:16px;margin-top:10px}
+.error-state{color:#ff7b72}.error-state p{margin:0 0 12px;line-height:1.7}
+.form-error{background:#3a1717;color:#ffb4b4;border:1px solid #6b2525;border-radius:7px;padding:10px 12px;line-height:1.55;font-size:14px;margin:10px 0;text-align:right}
+.limit-note{color:#9ea3a8;font-size:13px;line-height:1.5;margin:8px 2px 0;text-align:right}
