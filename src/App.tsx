@@ -1,17 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar } from '@capacitor/status-bar';
-import { seedPeople, formatMoney, type Person, type Transaction } from './data';
+import { formatMoney, type Person } from './data';
+import {
+  checkCreditLimit,
+  createDaftarContact,
+  createDaftarTransaction,
+  loadDaftarPeople,
+} from './daftarApi';
 import { Icon } from './icons';
 
 type Modal = 'none' | 'filter' | 'addPerson' | 'settings' | 'pin' | 'transaction';
-
-const loadPeople = (): Person[] => {
-  try { return JSON.parse(localStorage.getItem('dq-people') || '') as Person[]; } catch { return seedPeople; }
-};
+type SubmitResult = { ok: boolean; message?: string };
 
 export default function App() {
-  const [people, setPeople] = useState<Person[]>(loadPeople);
+  const [people, setPeople] = useState<Person[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
@@ -19,46 +22,131 @@ export default function App() {
   const [drawer, setDrawer] = useState(false);
   const [light, setLight] = useState(() => localStorage.getItem('dq-theme') === 'light');
   const [toast, setToast] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
     if (Capacitor.isNativePlatform()) void StatusBar.hide();
   }, []);
 
-  useEffect(() => localStorage.setItem('dq-people', JSON.stringify(people)), [people]);
   useEffect(() => { localStorage.setItem('dq-theme', light ? 'light' : 'dark'); }, [light]);
 
-  const filtered = useMemo(() => people.filter(p => `${p.name} ${p.latin || ''}`.toLowerCase().includes(query.toLowerCase())), [people, query]);
-  const selected = people.find(p => p.id === selectedId) || null;
-  const total = 47508250;
-  const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(''), 1700); };
-
-  const addPerson = (name: string, latin: string) => {
-    const next = Math.max(0, ...people.map(p => p.id)) + 1;
-    setPeople([...people, { id: next, name, latin, balance: 0, transactions: [] }]);
-    setModal('none');
+  const notify = (message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(''), 2200);
   };
 
-  const addTransaction = (amount: number, kind: 'debt' | 'credit', note: string) => {
-    if (!selected) return;
-    const transaction: Transaction = { id: crypto.randomUUID(), amount, kind, note, at: new Date().toLocaleString('en-GB', { hour12: false }).replace(',', '') };
-    setPeople(people.map(p => p.id === selected.id ? { ...p, balance: p.balance + (kind === 'debt' ? amount : -amount), transactions: [...p.transactions, transaction] } : p));
-    setModal('none');
+  const refresh = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
+    setLoadError('');
+    try {
+      const live = await loadDaftarPeople();
+      setPeople(live);
+      setSelectedId(current => current !== null && live.some(p => p.id === current) ? current : null);
+      if (quiet) notify('داتا نوێ کرایەوە');
+    } catch (error) {
+      console.error('Daftar load failed', error);
+      setLoadError('نەتوانرا داتای Daftar Qarz وەربگیرێت. پەیوەندیی ئینتەرنێت بپشکنە و دووبارە هەوڵ بدەوە.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const filtered = useMemo(
+    () => people.filter(p => `${p.name} ${p.latin || ''} ${p.phone || ''}`.toLowerCase().includes(query.toLowerCase())),
+    [people, query],
+  );
+  const selected = people.find(p => p.id === selectedId) || null;
+  const total = useMemo(() => people.reduce((sum, person) => sum + person.balance, 0), [people]);
+
+  const addPerson = async (name: string, phone: string): Promise<SubmitResult> => {
+    try {
+      await createDaftarContact(name, phone);
+      await refresh();
+      setModal('none');
+      notify('قەرزدار زیاد کرا');
+      return { ok: true };
+    } catch (error) {
+      console.error('Daftar contact create failed', error);
+      return { ok: false, message: 'زیادکردنی قەرزدار سەرکەوتوو نەبوو. هیچ داتایەک بە ناڕوونی تۆمار نەکرا.' };
+    }
+  };
+
+  const addTransaction = async (
+    amount: number,
+    kind: 'debt' | 'credit',
+    note: string,
+  ): Promise<SubmitResult> => {
+    if (!selected) return { ok: false, message: 'قەرزدار دیاری نەکراوە.' };
+
+    if (kind === 'debt') {
+      const check = await checkCreditLimit(selected.id, amount, 'IQD');
+      if (!check.allowed) {
+        if (check.error === 'credit_limit_exceeded') {
+          const limit = formatMoney(Number(check.debt_limit ?? 0));
+          const current = formatMoney(Number(check.current_balance ?? selected.balance));
+          const remaining = formatMoney(Number(check.remaining_capacity ?? 0));
+          return {
+            ok: false,
+            message: `سنووری قەرز تێدەپەڕێت. سنوور: ${limit} — قەرزی ئێستا: ${current} — بۆشایی ماوە: ${remaining}`,
+          };
+        }
+        return {
+          ok: false,
+          message: 'نەتوانرا سنووری قەرز پشتڕاست بکرێتەوە؛ بۆ پاراستنی هەژمار قەرز تۆمار نەکرا.',
+        };
+      }
+    }
+
+    try {
+      await createDaftarTransaction({
+        contactId: selected.id,
+        kind,
+        amount,
+        note,
+        currency: 'IQD',
+      });
+      await refresh();
+      setModal('none');
+      notify(kind === 'debt' ? 'قەرز تۆمار کرا' : 'پارەدان تۆمار کرا');
+      return { ok: true };
+    } catch (error) {
+      console.error('Daftar transaction create failed', error);
+      return {
+        ok: false,
+        message: 'تۆمارکردنی مامەڵە سەرکەوتوو نەبوو. دووبارە هەوڵ بدەوە.',
+      };
+    }
   };
 
   return <div className={light ? 'app light' : 'app'} dir="rtl">
-    <header className="status"><strong>4:08</strong><span className="island"><i /></span><span className="status-right"><span className="signal">▮▮▮▮</span><span>LTE</span><span className="battery">94</span></span></header>
+    <header className="status"><strong>{new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: false })}</strong><span className="island"><i /></span><span className="status-right"><span className="signal">▮▮▮▮</span><span>LTE</span><span className="battery">●</span></span></header>
 
-    {selected ? <LedgerHeader person={selected} onBack={() => setSelectedId(null)} onAdd={() => setModal('transaction')} /> : <MainHeader searching={searching} query={query} setQuery={setQuery} setSearching={setSearching} onFilter={() => setModal('filter')} onMenu={() => setDrawer(true)} onAdd={() => setModal('addPerson')} onRefresh={() => notify('نوێ کرایەوە')} />}
+    {selected
+      ? <LedgerHeader person={selected} onBack={() => setSelectedId(null)} onAdd={() => setModal('transaction')} />
+      : <MainHeader
+          searching={searching}
+          query={query}
+          setQuery={setQuery}
+          setSearching={setSearching}
+          onFilter={() => setModal('filter')}
+          onMenu={() => setDrawer(true)}
+          onAdd={() => setModal('addPerson')}
+          onRefresh={() => void refresh(true)}
+        />}
 
     <main className={selected ? 'ledger-main' : ''}>
       {selected ? <Ledger person={selected} /> : <>
         <Summary total={total} />
-        <section className="people-list">
+        {loading ? <section className="state-card">داتا بار دەکرێت...</section> : loadError ? <section className="state-card error-state"><p>{loadError}</p><button className="outline-wide" onClick={() => void refresh()}>دووبارە هەوڵدانەوە</button></section> : <section className="people-list">
           {filtered.map((person, index) => <button className="person-row" key={person.id} onClick={() => setSelectedId(person.id)}>
-            <span className="person-name"><b>{index + 1} :</b> {person.name} <strong>{person.latin}</strong></span>
+            <span className="person-name"><b>{index + 1} :</b> {person.name} {person.latin && <strong>{person.latin}</strong>}</span>
             {person.balance !== 0 && <span className="person-balance">{formatMoney(person.balance)}</span>}
           </button>)}
-        </section>
+          {filtered.length === 0 && <div className="state-card">هیچ قەرزدارێک نەدۆزرایەوە.</div>}
+        </section>}
       </>}
     </main>
 
@@ -80,7 +168,7 @@ function MainHeader({ searching, query, setQuery, setSearching, onFilter, onMenu
 }
 
 function LedgerHeader({ person, onBack, onAdd }: { person: Person; onBack: () => void; onAdd: () => void }) {
-  return <nav className="ledger-head"><button onClick={onBack}><Icon name="back" /></button><h1>{person.name} <small>{person.latin}</small></h1><button onClick={onAdd}><Icon name="plus" /></button></nav>;
+  return <nav className="ledger-head"><button onClick={onBack}><Icon name="back" /></button><h1>{person.name} {person.latin && <small>{person.latin}</small>}</h1><button onClick={onAdd}><Icon name="plus" /></button></nav>;
 }
 
 function Summary({ total }: { total: number }) {
@@ -88,13 +176,14 @@ function Summary({ total }: { total: number }) {
 }
 
 function Ledger({ person }: { person: Person }) {
-  const debt = person.transactions.filter(t => t.kind === 'debt').reduce((s, t) => s + t.amount, 0);
-  const credit = person.transactions.filter(t => t.kind === 'credit').reduce((s, t) => s + t.amount, 0);
+  const debt = person.transactions.filter(t => t.kind === 'debt' && t.currency === 'IQD').reduce((s, t) => s + t.amount, 0);
+  const credit = person.transactions.filter(t => t.kind === 'credit' && t.currency === 'IQD').reduce((s, t) => s + t.amount, 0);
   return <>
     <section className="transactions">
       {person.transactions.map(t => <article key={t.id} className={`transaction ${t.kind}`}>
-        <strong>{formatMoney(t.amount)}</strong><span>{t.note}</span><small>{t.at}</small>
+        <strong>{formatMoney(t.amount, t.currency)}</strong><span>{t.note}</span><small>{t.at}</small>
       </article>)}
+      {person.transactions.length === 0 && <div className="state-card">هیچ مامەڵەیەک نییە.</div>}
     </section>
     <section className="ledger-total"><p>کۆی گشتی : {formatMoney(debt - credit)}</p><div><span className="red">قەرز: {formatMoney(debt)}</span><span className="green">گەڕاوە: {formatMoney(credit)}</span></div></section>
   </>;
@@ -114,22 +203,50 @@ function FilterModal({ onClose }: { onClose: () => void }) {
   </Backdrop>;
 }
 
-function AddPersonModal({ onClose, onAdd }: { onClose: () => void; onAdd: (name: string, latin: string) => void }) {
-  const [name, setName] = useState(''); const [latin, setLatin] = useState('');
+function AddPersonModal({ onClose, onAdd }: { onClose: () => void; onAdd: (name: string, phone: string) => Promise<SubmitResult> }) {
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async () => {
+    if (!name.trim() || busy) return;
+    setBusy(true); setError('');
+    const result = await onAdd(name.trim(), phone.trim());
+    if (!result.ok) setError(result.message || 'هەڵەیەک ڕوویدا');
+    setBusy(false);
+  };
   return <Backdrop onClose={onClose} sheet><button className="modal-close" onClick={onClose}><Icon name="close" /></button><h2>زیادکردنی قەرزدار</h2>
     <input className="field" autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="ناوی قەرزدار" />
-    <input className="field" value={latin} onChange={e => setLatin(e.target.value)} placeholder="ناو بە لاتینی" dir="ltr" />
-    <button className="outline-wide" disabled={!name.trim()} onClick={() => onAdd(name.trim(), latin.trim())}>زیادکردن</button>
+    <input className="field" value={phone} onChange={e => setPhone(e.target.value.replace(/[^0-9+]/g, ''))} placeholder="ژمارە مۆبایل" dir="ltr" />
+    {error && <p className="form-error">{error}</p>}
+    <button className="outline-wide" disabled={!name.trim() || busy} onClick={() => void submit()}>{busy ? 'تۆمار دەکرێت...' : 'زیادکردن'}</button>
   </Backdrop>;
 }
 
-function TransactionModal({ name, onClose, onAdd }: { name: string; onClose: () => void; onAdd: (amount: number, kind: 'debt' | 'credit', note: string) => void }) {
-  const [amount, setAmount] = useState(''); const [note, setNote] = useState(''); const [kind, setKind] = useState<'debt' | 'credit'>('debt');
+function TransactionModal({ name, onClose, onAdd }: { name: string; onClose: () => void; onAdd: (amount: number, kind: 'debt' | 'credit', note: string) => Promise<SubmitResult> }) {
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [kind, setKind] = useState<'debt' | 'credit'>('debt');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async () => {
+    const numeric = Number(amount);
+    if (!numeric || busy) return;
+    setBusy(true);
+    setError('');
+    const result = await onAdd(numeric, kind, note);
+    if (!result.ok) setError(result.message || 'هەڵەیەک ڕوویدا');
+    setBusy(false);
+  };
+
   return <Backdrop onClose={onClose} sheet><button className="modal-close" onClick={onClose}><Icon name="close" /></button><h2>{name}</h2>
-    <div className="segment"><button className={kind === 'debt' ? 'active' : ''} onClick={() => setKind('debt')}>قەرز</button><button className={kind === 'credit' ? 'active green-bg' : ''} onClick={() => setKind('credit')}>گەڕاندنەوە</button></div>
+    <div className="segment"><button className={kind === 'debt' ? 'active' : ''} onClick={() => { setKind('debt'); setError(''); }}>قەرز</button><button className={kind === 'credit' ? 'active green-bg' : ''} onClick={() => { setKind('credit'); setError(''); }}>گەڕاندنەوە</button></div>
     <input className="field" inputMode="numeric" value={amount} onChange={e => setAmount(e.target.value.replace(/\D/g, ''))} placeholder="بڕی پارە بە دینار" />
     <textarea className="field" value={note} onChange={e => setNote(e.target.value)} placeholder="تێبینی" />
-    <button className="outline-wide" disabled={!Number(amount)} onClick={() => onAdd(Number(amount), kind, note)}>تۆمارکردن</button>
+    {kind === 'debt' && <p className="limit-note">پێش تۆمارکردن سنووری قەرز خۆکار پشکنراوە.</p>}
+    {error && <p className="form-error">{error}</p>}
+    <button className="outline-wide" disabled={!Number(amount) || busy} onClick={() => void submit()}>{busy ? 'پشکنین و تۆمارکردن...' : 'تۆمارکردن'}</button>
   </Backdrop>;
 }
 
